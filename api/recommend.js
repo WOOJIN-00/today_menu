@@ -239,7 +239,10 @@ const hasRequiredFields = (m) =>
 // 메뉴 이름 비교용: 띄어쓰기·대소문자 차이는 같은 메뉴로 본다 ("단호박 죽" = "단호박죽")
 const sameName = (name) => normalizeForKey(name).replace(/ /g, "");
 
-// AI 응답 글자를 검사해서 쓸 수 있는 새 메뉴를 최대 3개 돌려준다. 하나도 없으면 null.
+// AI 응답 글자를 검사해서 { menus: 최대 3개 } 를 돌려준다.
+// - 새 메뉴가 0개인데 형식이 맞는 후보는 있었다면(전부 이미 나온 메뉴·중복) { noNew: true }
+//   → "AI는 정상 응답했지만 새 메뉴가 없음" (AI 오류와 구분해 화면 문구를 다르게 보여 준다)
+// - JSON이 깨졌거나 모든 후보의 형식이 틀리면 null
 // - 형식이 틀린 후보, 제외 메뉴와 같은 후보, 후보끼리 중복은 그 후보만 버린다.
 // - 걸러낸 이유는 개수만 로그에 남긴다. (사용자 입력·메뉴 이름은 남기지 않음)
 function parseMenus(text, exclude, label) {
@@ -281,7 +284,8 @@ function parseMenus(text, exclude, label) {
   if (excluded) warn(`제외 메뉴 포함 ${excluded}개 버림`);
   if (duplicate) warn(`후보끼리 중복 ${duplicate}개 버림`);
   if (menus.length < MENUS_TO_SHOW) warn(`개수 부족 - 후보 ${candidates.length}개 중 새 메뉴 ${menus.length}개`);
-  return menus.length ? menus.slice(0, MENUS_TO_SHOW) : null;
+  if (menus.length) return { menus: menus.slice(0, MENUS_TO_SHOW) };
+  return invalid < candidates.length ? { noNew: true } : null;
 }
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -300,16 +304,16 @@ async function recommendWithAI(input) {
   const backupModel = process.env.GEMINI_FALLBACK_MODEL;
   let useLowThinking = true;
 
-  // 한 번 시도하고 결과를 { menus } 또는 { status, timedOut } 로 돌려준다.
+  // 한 번 시도하고 결과를 { menus } / { noNew } / { status, timedOut } 로 돌려준다.
   // 첫 시도가 아니면 재시도용 프롬프트(제외 메뉴 목록·다양성 지시 추가)를 쓴다.
   async function attempt(model, label, isRetry) {
     try {
       const timeoutMs = Math.min(AI_ATTEMPT_TIMEOUT_MS, deadline - Date.now());
       const prompt = isRetry ? retryPrompt : firstPrompt;
-      const menus = parseMenus(await callGemini(prompt, { model, timeoutMs, useLowThinking }), input.exclude, label);
-      if (menus) return { menus };
+      const parsed = parseMenus(await callGemini(prompt, { model, timeoutMs, useLowThinking }), input.exclude, label);
+      if (parsed?.menus) return { menus: parsed.menus };
       console.warn(`AI 응답 검증 실패 (${label}): 쓸 수 있는 새 메뉴 0개`);
-      return {};
+      return { noNew: !!parsed?.noNew };
     } catch (err) {
       const timedOut = err.name === "AbortError";
       console.warn(`AI 호출 실패 (${label}): ${timedOut ? "시간 초과" : err.message}`);
@@ -328,7 +332,7 @@ async function recommendWithAI(input) {
   const overloaded = result.status === 503;
   const waitMs = overloaded ? OVERLOAD_RETRY_DELAY_MS : 0;
   if (result.status === 400) useLowThinking = false; // 생각 단계 설정을 모르는 모델일 수 있음
-  if (!hasTimeFor(waitMs)) return { reason: "ai_error" };
+  if (!hasTimeFor(waitMs)) return { reason: "ai_error", noNew: result.noNew };
   await sleep(waitMs);
   result = await attempt(primaryModel, "재시도", true);
   if (result.menus) return result;
@@ -340,15 +344,17 @@ async function recommendWithAI(input) {
     if (result.menus) return result;
     if (result.status === 429) return { reason: "ai_quota" };
   }
-  return { reason: "ai_error" };
+  // noNew: 마지막 시도에서 AI는 정상 응답했지만 새 메뉴가 0개였음
+  return { reason: "ai_error", noNew: result.noNew };
 }
 
 // ---------- 5. 대체 경로 ----------
 
 // recommendFromRecipes 는 고른 재료와 하나라도 겹치는 레시피만 돌려준다.
 // 겹치는 게 하나도 없으면 엉뚱한 메뉴로 채우지 않고 빈 목록 + reason "no_match" 로 응답한다.
-// (cause: 원래 대체 경로로 온 이유 - no_key, ai_error 등)
-function fallback(input, reason) {
+// - cause: 원래 대체 경로로 온 이유 (no_key, ai_error 등 = AI를 쓰지 못함)
+// - aiNoNew: AI는 정상 응답했지만 새 메뉴가 0개 → cause 없이 보낸다
+function fallback(input, reason, aiNoNew = false) {
   const menus = recommendFromRecipes(input.ingredients, input.mood, input.exclude).map((m) => ({
     name: m.name,
     time_min: m.time_min,
@@ -357,8 +363,10 @@ function fallback(input, reason) {
     steps: m.steps,
   }));
   if (menus.length === 0) {
-    console.warn(`기본 레시피 대체: 겹치는 재료가 있는 메뉴 없음 (원래 이유: ${reason})`);
-    return { source: "fallback", reason: "no_match", cause: reason, menus: [] };
+    console.warn(`기본 레시피 대체: 겹치는 재료가 있는 메뉴 없음 (원래 이유: ${aiNoNew ? "AI 새 메뉴 0개" : reason})`);
+    return aiNoNew
+      ? { source: "fallback", reason: "no_match", menus: [] }
+      : { source: "fallback", reason: "no_match", cause: reason, menus: [] };
   }
   return withPartial({ source: "fallback", reason, menus });
 }
@@ -400,7 +408,7 @@ module.exports = async function handler(req, res) {
     if (!useQuota(getClientIp(req))) return res.status(200).json(fallback(input, "daily_limit"));
 
     const result = await recommendWithAI(input);
-    if (!result.menus) return res.status(200).json(fallback(input, result.reason));
+    if (!result.menus) return res.status(200).json(fallback(input, result.reason, result.noNew));
 
     setCached(key, result.menus);
     return res.status(200).json(withPartial({ source: "ai", menus: result.menus }));

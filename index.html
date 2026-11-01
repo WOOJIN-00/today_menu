@@ -402,6 +402,7 @@
       setMessage("");
       setLoading(true);
       let menus, source;
+      let emptyMessage; // 메뉴가 0개일 때 보여 줄 문구
       try {
         const data = await requestRecommend(exclude);
         if (data.error) {
@@ -410,11 +411,17 @@
         }
         menus = data.menus;
         source = data.source === "ai" ? "ai" : "fallback";
+        // no_match 에 cause 가 없으면 AI는 정상 응답했지만 새 메뉴가 0개인 경우,
+        // cause 가 있으면(ai_error, ai_quota, daily_limit, no_key 등) AI를 쓰지 못한 경우
+        emptyMessage = data.reason === "no_match" && !data.cause
+          ? "이 재료로 더 추천할 새 메뉴를 못 찾았어요. 재료를 더 추가하거나 처음부터 다시 추천받아 보세요."
+          : "AI가 지금 바빠서 새 메뉴를 가져오지 못했어요. 잠시 뒤 다시 눌러 주세요.";
       } catch {
         // 서버에 닿지 못함(인터넷 끊김, 파일로 직접 열었을 때 등) → 브라우저 안의 기본 레시피로
         menus = recommendFromRecipes([...selected], mood, exclude);
         source = "fallback";
         setMessage("서버에 연결하지 못했어요. 인터넷 연결을 확인해 주세요. 우선 기본 레시피로 보여 드릴게요.");
+        emptyMessage = "서버에 연결하지 못했어요. 인터넷 연결을 확인하고 잠시 뒤 다시 눌러 주세요.";
       } finally {
         setLoading(false);
       }
@@ -423,7 +430,7 @@
       // 다시 추천일 때는 직전 결과를 그대로 두고, 처음 추천일 때는 예전 결과를 숨긴다.
       if (menus.length === 0) {
         if (!isAgain) $("resultArea").hidden = true;
-        setMessage("이 재료로 더 추천할 새 메뉴를 못 찾았어요. 재료를 더 추가하거나 처음부터 다시 추천받아 보세요.");
+        setMessage(emptyMessage);
         return;
       }
       // 3개보다 적으면 몇 개인지 알려 준다. (서버 연결 실패 안내가 있으면 뒤에 붙임)

@@ -59,8 +59,11 @@
 - 메뉴가 3개보다 적으면 `"partial": true`가 붙습니다. (화면에 "AI가 새로 찾은 메뉴는 N개예요" 등 안내)
 - 기본 레시피로 응답할 때는 `"source": "fallback"`과 함께 이유를 알려 주는 `reason`이 붙습니다.
   `no_key`(키 없음), `daily_limit`(하루 횟수 초과), `ai_quota`(Gemini 한도 초과), `ai_error`(AI 오류·검증 실패), `server_error`(예상치 못한 오류).
-- 기본 레시피 중 고른 재료와 겹치는 메뉴가 하나도 없으면 `"reason": "no_match"`, `"menus": []`로 응답하고,
-  원래 대체 경로로 온 이유는 `cause`에 담습니다. (예: `{"source":"fallback","reason":"no_match","cause":"ai_error","menus":[]}`)
+- 기본 레시피 중 고른 재료와 겹치는 메뉴가 하나도 없으면 `"reason": "no_match"`, `"menus": []`로 응답합니다.
+  - AI를 쓰지 못해 대체 경로로 왔다면 그 이유를 `cause`에 담습니다. (예: `{"source":"fallback","reason":"no_match","cause":"ai_error","menus":[]}`)
+    → 화면: "AI가 지금 바빠서 새 메뉴를 가져오지 못했어요. 잠시 뒤 다시 눌러 주세요."
+  - AI는 정상 응답했지만 새 메뉴가 0개였다면(후보가 모두 이미 나온 메뉴) `cause`가 없습니다.
+    → 화면: "이 재료로 더 추천할 새 메뉴를 못 찾았어요. 재료를 더 추가하거나 처음부터 다시 추천받아 보세요."
 
 ## 로컬 실행 방법
 
