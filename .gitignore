@@ -1,0 +1,8 @@
+# API 키 등 비밀 값이 들어가는 파일 (절대 GitHub에 올리지 않음)
+.env*
+
+# npm으로 설치한 라이브러리 폴더
+node_modules
+
+# Vercel 로컬 설정
+.vercel

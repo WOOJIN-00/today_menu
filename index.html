@@ -1,0 +1,434 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <!-- 모바일에서 화면 폭에 맞게 보이도록 하는 설정 -->
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>오늘 뭐 먹지?</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
+      background: #fff8f0;
+      color: #333;
+      line-height: 1.5;
+    }
+    .wrap { max-width: 720px; margin: 0 auto; padding: 24px 16px 48px; }
+    .top { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
+    h1 { margin: 0 0 4px; font-size: 1.6rem; }
+    .sub { margin: 0 0 24px; color: #777; }
+    section { background: #fff; border-radius: 14px; padding: 16px; margin-bottom: 16px; box-shadow: 0 1px 4px rgba(0,0,0,.06); }
+    h2 { font-size: 1.05rem; margin: 0 0 12px; }
+    h2 .opt { font-weight: normal; color: #999; font-size: .85rem; }
+    .step { display: inline-block; width: 1.6em; height: 1.6em; line-height: 1.6em; text-align: center; border-radius: 50%; background: #ff7a45; color: #fff; font-size: .85rem; margin-right: 4px; }
+
+    /* 칩(동그란 버튼) 모양 */
+    .chips { display: flex; flex-wrap: wrap; gap: 8px; }
+    .chip {
+      border: 1px solid #e3d5c5; background: #fff; color: #555;
+      border-radius: 999px; padding: 6px 14px; font-size: .95rem; cursor: pointer;
+    }
+    .chip.on { background: #ff7a45; border-color: #ff7a45; color: #fff; }
+
+    .add-row { display: flex; gap: 8px; margin-top: 12px; }
+    .add-row input {
+      flex: 1; min-width: 0; padding: 10px 12px; font-size: 1rem;
+      border: 1px solid #e3d5c5; border-radius: 10px;
+    }
+    .add-row button, .main-btn, .sub-btn {
+      border: 0; border-radius: 10px; cursor: pointer; font-size: 1rem;
+    }
+    .add-row button { padding: 0 16px; background: #555; color: #fff; }
+    .hint { margin: 8px 0 0; font-size: .85rem; color: #999; }
+    .link-btn { background: none; border: 0; padding: 0; color: #999; text-decoration: underline; cursor: pointer; font-size: .85rem; }
+
+    .main-btn {
+      display: block; width: 100%; padding: 14px; margin-bottom: 12px;
+      background: #ff7a45; color: #fff; font-size: 1.1rem; font-weight: bold;
+    }
+    .sub-btn { padding: 10px 16px; background: #fff; color: #ff7a45; border: 1px solid #ff7a45; }
+    button:disabled { opacity: .55; cursor: wait; }
+    .fav-toggle { flex-shrink: 0; padding: 8px 12px; font-size: .9rem; }
+    .message { min-height: 1.5em; margin: 0 0 16px; text-align: center; color: #d9480f; font-weight: bold; }
+
+    .notice { background: #fff4e6; border: 1px solid #ffd8a8; border-radius: 10px; padding: 10px 12px; margin-bottom: 12px; font-size: .9rem; }
+    .notice p { margin: 0; }
+    .notice p + p { margin-top: 4px; }
+
+    /* 결과 카드: 넓은 화면에선 여러 줄, 좁은 화면(모바일)에선 한 줄에 하나 */
+    .results { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 12px; }
+    .card { background: #fff; border-radius: 14px; padding: 16px; box-shadow: 0 1px 4px rgba(0,0,0,.08); display: flex; flex-direction: column; }
+    .card-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+    .badge { display: inline-block; font-size: .75rem; background: #eee; color: #666; border-radius: 6px; padding: 2px 8px; }
+    .badge.ai { background: #e7f5ff; color: #1971c2; }
+    .star { background: none; border: 0; font-size: 1.4rem; line-height: 1; cursor: pointer; padding: 4px; color: #ccc; }
+    .star.on { color: #fab005; }
+    .card h3 { margin: 8px 0 4px; font-size: 1.2rem; }
+    .meta { margin: 0 0 8px; color: #777; font-size: .9rem; }
+    .missing { margin: 0 0 8px; font-size: .9rem; }
+    .missing.none { color: #2f9e44; }
+    .card ol { margin: 0; padding-left: 20px; font-size: .92rem; }
+    .card li { margin-bottom: 4px; }
+    .card .safety { margin: 10px 0 0; font-size: .8rem; color: #999; }
+
+    .again-row { text-align: center; margin-top: 16px; }
+    #favorites h2 { display: flex; justify-content: space-between; align-items: center; }
+    .empty { color: #999; margin: 0; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="top">
+      <div>
+        <h1>🍳 오늘 뭐 먹지?</h1>
+        <p class="sub">재료를 고르고 추천받기만 누르면 메뉴 3개와 레시피가 나와요.</p>
+      </div>
+      <button id="favToggle" class="sub-btn fav-toggle" type="button">⭐ 즐겨찾기</button>
+    </div>
+
+    <!-- 즐겨찾기 목록 (버튼을 누르면 열림) -->
+    <section id="favorites" hidden>
+      <h2>⭐ 즐겨찾기 <button id="favClose" class="link-btn" type="button">닫기</button></h2>
+      <div id="favList" class="results"></div>
+    </section>
+
+    <section>
+      <h2><span class="step">1</span>재료 고르기</h2>
+      <div id="ingredientChips" class="chips"></div>
+      <form id="addForm" class="add-row">
+        <input id="customInput" type="text" maxlength="15" placeholder="목록에 없는 재료 직접 입력" />
+        <button type="submit">추가</button>
+      </form>
+      <p class="hint">
+        소금·간장·고추장·식용유 같은 기본 양념은 있다고 가정해요. 최대 15개까지 고를 수 있어요.
+        <button id="clearBtn" class="link-btn" type="button">선택 모두 해제</button>
+      </p>
+    </section>
+
+    <section>
+      <h2>기분·상황 <span class="opt">(선택 안 해도 돼요)</span></h2>
+      <div id="moodChips" class="chips"></div>
+    </section>
+
+    <button id="recommendBtn" class="main-btn" type="button"><span class="step">2</span>추천받기</button>
+    <p id="message" class="message" aria-live="polite"></p>
+
+    <!-- 3. 결과 영역 -->
+    <div id="resultArea" hidden>
+      <div id="aiNotice" class="notice" hidden>
+        <p>⚠️ AI 추천이므로 조리 전 재료와 익힘 정도를 확인하세요.</p>
+        <p>고기·달걀·해산물은 속까지 충분히 익히고, 알레르기가 있는 재료는 빼 주세요. 불과 칼을 쓸 때는 조심하세요.</p>
+      </div>
+      <div id="results" class="results" aria-live="polite"></div>
+      <div class="again-row">
+        <button id="againBtn" class="sub-btn" type="button">🔄 다시 추천 (다른 메뉴 보기)</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 레시피 데이터와 추천 함수를 먼저 불러온다 (서버 연결 실패 시 대체용) -->
+  <script src="recipes.js"></script>
+  <script>
+    // 서버(api/recommend.js)의 입력 제한과 맞춘다. 넘기면 서버가 400 오류를 돌려줌.
+    const MAX_SELECTED = 15;
+    const MAX_CUSTOM = 10;
+    const MAX_LENGTH = 15;
+    const MAX_EXCLUDE = 30;
+    const MAX_EXCLUDE_LENGTH = 30;
+    const REQUEST_TIMEOUT_MS = 30 * 1000; // 서버는 AI를 최대 2번 부르므로 넉넉하게
+    const FAVORITES_KEY = "menuFavorites";
+
+    const MOODS = [
+      { value: "", label: "상관없음" },
+      { value: "빠르게", label: "⚡ 빠르게 (15분 이내)" },
+      { value: "든든", label: "🍚 든든하게" },
+      { value: "가벼움", label: "🥗 가볍게" },
+      { value: "매콤", label: "🌶️ 매콤하게" },
+      { value: "국물", label: "🍲 따뜻한 국물" },
+    ];
+
+    // 화면 상태
+    const selected = new Set(); // 선택한 재료
+    const custom = [];          // 직접 추가한 재료
+    let mood = "";              // 선택한 기분
+    let shownNames = [];        // 지금까지 나온 메뉴 이름 (다시 추천 때 제외용)
+    let favorites = loadFavorites();
+
+    const $ = (id) => document.getElementById(id);
+    const setMessage = (text) => { $("message").textContent = text; };
+
+    // ---------- 즐겨찾기 (브라우저 localStorage) ----------
+    // 사생활 보호 모드 등에서는 localStorage가 막힐 수 있어서 try/catch로 감싼다.
+
+    function loadFavorites() {
+      try {
+        const data = JSON.parse(localStorage.getItem(FAVORITES_KEY) || "[]");
+        return Array.isArray(data) ? data.filter((m) => m && typeof m.name === "string") : [];
+      } catch {
+        return [];
+      }
+    }
+
+    function saveFavorites() {
+      try {
+        localStorage.setItem(FAVORITES_KEY, JSON.stringify(favorites));
+      } catch {
+        setMessage("이 브라우저에서는 즐겨찾기를 저장할 수 없어요. (이번 접속 동안만 유지돼요)");
+      }
+    }
+
+    const isFavorite = (name) => favorites.some((f) => f.name === name);
+
+    function toggleFavorite(menu) {
+      if (isFavorite(menu.name)) {
+        favorites = favorites.filter((f) => f.name !== menu.name);
+      } else {
+        favorites.push(menu);
+      }
+      saveFavorites();
+      refreshStars();
+      renderFavorites();
+    }
+
+    // 화면에 있는 모든 별 버튼의 상태를 즐겨찾기 목록에 맞춘다.
+    function refreshStars() {
+      document.querySelectorAll(".star").forEach((btn) => {
+        const on = isFavorite(btn.dataset.name);
+        btn.classList.toggle("on", on);
+        btn.textContent = on ? "★" : "☆";
+        btn.setAttribute("aria-label", on ? "즐겨찾기 해제" : "즐겨찾기 저장");
+      });
+      $("favToggle").textContent = `⭐ 즐겨찾기 (${favorites.length})`;
+    }
+
+    function renderFavorites() {
+      const list = $("favList");
+      list.innerHTML = "";
+      if (favorites.length === 0) {
+        const p = document.createElement("p");
+        p.className = "empty";
+        p.textContent = "아직 저장한 메뉴가 없어요. 결과 카드의 ☆를 눌러 저장해 보세요.";
+        list.appendChild(p);
+      } else {
+        favorites.forEach((m) => list.appendChild(makeCard(m)));
+      }
+      refreshStars();
+    }
+
+    $("favToggle").addEventListener("click", () => {
+      $("favorites").hidden = !$("favorites").hidden;
+      if (!$("favorites").hidden) renderFavorites();
+    });
+    $("favClose").addEventListener("click", () => { $("favorites").hidden = true; });
+
+    // ---------- 재료·기분 선택 ----------
+
+    function makeChip(label, isOn, onClick) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "chip" + (isOn ? " on" : "");
+      btn.textContent = label;
+      btn.addEventListener("click", onClick);
+      return btn;
+    }
+
+    function renderIngredients() {
+      const box = $("ingredientChips");
+      box.innerHTML = "";
+      [...ALL_INGREDIENTS, ...custom].forEach((name) => {
+        box.appendChild(makeChip(name, selected.has(name), () => {
+          if (selected.has(name)) {
+            selected.delete(name);
+          } else if (selected.size >= MAX_SELECTED) {
+            setMessage(`재료는 최대 ${MAX_SELECTED}개까지 고를 수 있어요.`);
+            return;
+          } else {
+            selected.add(name);
+          }
+          setMessage("");
+          renderIngredients();
+        }));
+      });
+    }
+
+    function renderMoods() {
+      const box = $("moodChips");
+      box.innerHTML = "";
+      MOODS.forEach((m) => {
+        box.appendChild(makeChip(m.label, mood === m.value, () => {
+          mood = m.value;
+          renderMoods();
+        }));
+      });
+    }
+
+    // 직접 입력 → 칩으로 추가하고 바로 선택 상태로
+    $("addForm").addEventListener("submit", (e) => {
+      e.preventDefault(); // 폼 기본 동작(페이지 새로고침) 막기
+      const name = $("customInput").value.trim().replace(/\s+/g, " ").slice(0, MAX_LENGTH);
+      if (!name) return;
+      if (!selected.has(name) && selected.size >= MAX_SELECTED) {
+        setMessage(`재료는 최대 ${MAX_SELECTED}개까지 고를 수 있어요.`);
+        return;
+      }
+      if (!ALL_INGREDIENTS.includes(name) && !custom.includes(name)) {
+        if (custom.length >= MAX_CUSTOM) {
+          setMessage(`직접 입력 재료는 최대 ${MAX_CUSTOM}개까지 추가할 수 있어요.`);
+          return;
+        }
+        custom.push(name);
+      }
+      selected.add(name);
+      $("customInput").value = "";
+      setMessage("");
+      renderIngredients();
+    });
+
+    $("clearBtn").addEventListener("click", () => {
+      selected.clear();
+      setMessage("");
+      renderIngredients();
+    });
+
+    // ---------- 결과 카드 ----------
+    // AI가 만든 글자는 innerHTML이 아니라 textContent로만 넣는다. (글자 속 코드가 실행되지 않게)
+
+    function makeCard(menu) {
+      const isAI = menu.source === "ai";
+      const card = document.createElement("article");
+      card.className = "card";
+
+      const head = document.createElement("div");
+      head.className = "card-head";
+      const badge = document.createElement("span");
+      badge.className = "badge" + (isAI ? " ai" : "");
+      badge.textContent = isAI ? "🤖 AI 추천" : "📖 기본 레시피";
+      const star = document.createElement("button");
+      star.type = "button";
+      star.className = "star";
+      star.dataset.name = menu.name;
+      star.addEventListener("click", () => toggleFavorite(menu));
+      head.append(badge, star);
+
+      const title = document.createElement("h3");
+      title.textContent = menu.name;
+
+      const meta = document.createElement("p");
+      meta.className = "meta";
+      meta.textContent = `⏱️ 약 ${menu.time_min}분 · 재료: ${menu.ingredients.join(", ")}`;
+
+      const missing = document.createElement("p");
+      missing.className = "missing" + (menu.missing.length ? "" : " none");
+      missing.textContent = menu.missing.length
+        ? `🛒 부족한 재료: ${menu.missing.join(", ")}`
+        : "✅ 재료가 모두 있어요!";
+
+      const steps = document.createElement("ol");
+      menu.steps.forEach((s) => {
+        const li = document.createElement("li");
+        li.textContent = s;
+        steps.appendChild(li);
+      });
+
+      card.append(head, title, meta, missing, steps);
+
+      // 즐겨찾기 목록에서도 AI 메뉴에는 안전 문구가 보이도록 카드에도 넣는다.
+      if (isAI) {
+        const safety = document.createElement("p");
+        safety.className = "safety";
+        safety.textContent = "AI 추천이므로 조리 전 재료와 익힘 정도를 확인하세요.";
+        card.appendChild(safety);
+      }
+      return card;
+    }
+
+    function showResults(menus, source) {
+      const results = $("results");
+      results.innerHTML = "";
+      menus.forEach((m) => results.appendChild(makeCard({ ...m, source })));
+      $("aiNotice").hidden = source !== "ai";
+      $("resultArea").hidden = false;
+      refreshStars();
+      // 3단계: 결과(레시피)로 화면을 자동으로 내려 준다.
+      $("resultArea").scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+
+    // ---------- 서버 호출 ----------
+
+    function setLoading(on) {
+      $("recommendBtn").disabled = on;
+      $("againBtn").disabled = on;
+      $("recommendBtn").lastChild.textContent = on ? "추천 중이에요… ⏳" : "추천받기";
+      $("resultArea").setAttribute("aria-busy", String(on));
+    }
+
+    // 서버에 보낼 제외 목록: 서버 제한(30개, 30자)을 넘지 않게 최근 것만
+    function buildExclude() {
+      return shownNames.filter((n) => n.length <= MAX_EXCLUDE_LENGTH).slice(-MAX_EXCLUDE);
+    }
+
+    async function requestRecommend(exclude) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+      try {
+        const res = await fetch("/api/recommend", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ingredients: [...selected], mood, exclude }),
+          signal: controller.signal,
+        });
+        const data = await res.json();
+        if (res.status === 400) return { error: data.error || "입력을 다시 확인해 주세요." };
+        if (!res.ok || !Array.isArray(data.menus)) throw new Error("잘못된 응답");
+        return data;
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+
+    async function recommend(isAgain) {
+      if (selected.size === 0) {
+        setMessage("재료를 하나 이상 골라 주세요! 🥕");
+        return;
+      }
+      if (!isAgain) shownNames = []; // 새로 추천받기는 처음부터
+      const exclude = buildExclude();
+
+      setMessage("");
+      setLoading(true);
+      let menus, source;
+      try {
+        const data = await requestRecommend(exclude);
+        if (data.error) {
+          setMessage(data.error);
+          return;
+        }
+        menus = data.menus;
+        source = data.source === "ai" ? "ai" : "fallback";
+      } catch {
+        // 서버에 닿지 못함(인터넷 끊김, 파일로 직접 열었을 때 등) → 브라우저 안의 기본 레시피로
+        menus = recommendFromRecipes([...selected], mood, exclude);
+        source = "fallback";
+        setMessage("서버에 연결하지 못했어요. 인터넷 연결을 확인해 주세요. 우선 기본 레시피로 보여 드릴게요.");
+      } finally {
+        setLoading(false);
+      }
+
+      if (menus.length === 0) {
+        setMessage("더 추천할 메뉴가 없어요. 재료를 바꾸거나 추천받기를 다시 눌러 주세요.");
+        return;
+      }
+      shownNames.push(...menus.map((m) => m.name));
+      showResults(menus, source);
+    }
+
+    $("recommendBtn").addEventListener("click", () => recommend(false));
+    $("againBtn").addEventListener("click", () => recommend(true));
+
+    renderIngredients();
+    renderMoods();
+    refreshStars();
+  </script>
+</body>
+</html>
