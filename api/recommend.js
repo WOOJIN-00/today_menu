@@ -147,6 +147,8 @@ function buildPrompt({ ingredients, mood, exclude }, isRetry = false) {
     "",
     "규칙:",
     `- 주어진 재료 위주로 만들 수 있는 서로 다른 메뉴 후보 ${AI_CANDIDATES}개를, 잘 어울리는 순서대로 추천한다.`,
+    // 서버는 앞에서부터 3개를 쓰므로, 실제로 해 먹을 만한 메뉴가 앞에 오도록 한다.
+    `- 후보 ${AI_CANDIDATES}개는 한 끼 식사나 반찬으로 실제로 해 먹을 만한 메뉴를 앞쪽에 두고, 음료·디저트·과자류(라떼, 칩, 퓨레 등)는 후보가 부족할 때에만 뒤쪽에 둔다.`,
     "- 소금, 설탕, 후추, 간장, 고추장, 된장, 고춧가루, 다진마늘, 식용유, 참기름, 식초, 케첩, 마요네즈 같은 기본 양념은 있다고 가정한다.",
     "- ingredients에는 기본 양념을 제외한 주재료를 적는다.",
     "- missing에는 ingredients 중 사용자가 가지고 있지 않은 재료를 적는다. 없으면 빈 배열.",
@@ -339,10 +341,24 @@ async function recommendWithAI(input) {
   if (result.status === 429) return { reason: "ai_quota" };
 
   // ③ 예비 모델 (기본 모델이 두 번 다 과부하일 때만)
-  if (overloaded && result.status === 503 && backupModel && backupModel !== primaryModel && hasTimeFor()) {
-    result = await attempt(backupModel, `예비 모델 ${backupModel}`, true);
-    if (result.menus) return result;
-    if (result.status === 429) return { reason: "ai_quota" };
+  //    로그에는 모델 이름과 사유만 남긴다. (키·재료·메뉴 이름은 남기지 않음)
+  if (overloaded && result.status === 503 && backupModel && backupModel !== primaryModel) {
+    if (!hasTimeFor()) {
+      console.warn(`예비 모델 건너뜀: ${backupModel} - 남은 시간 부족`);
+    } else {
+      console.warn(`예비 모델 시도: ${backupModel} (기본 모델 ${primaryModel} 503 두 번)`);
+      result = await attempt(backupModel, `예비 모델 ${backupModel}`, true);
+      if (result.menus) {
+        console.warn(`예비 모델 성공: ${backupModel} (새 메뉴 ${result.menus.length}개)`);
+        return result;
+      }
+      const why = result.timedOut ? "시간 초과"
+        : result.status ? `HTTP ${result.status}`
+        : result.noNew ? "새 메뉴 0개"
+        : "응답 검증 실패";
+      console.warn(`예비 모델 실패: ${backupModel} - ${why}`);
+      if (result.status === 429) return { reason: "ai_quota" };
+    }
   }
   // noNew: 마지막 시도에서 AI는 정상 응답했지만 새 메뉴가 0개였음
   return { reason: "ai_error", noNew: result.noNew };

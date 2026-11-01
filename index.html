@@ -13,6 +13,9 @@
       background: #fff8f0;
       color: #333;
       line-height: 1.5;
+      /* 한글 단어가 줄 끝에서 중간에 끊기지 않게 (아주 긴 단어만 예외로 끊음) */
+      word-break: keep-all;
+      overflow-wrap: anywhere;
     }
     .wrap { max-width: 720px; margin: 0 auto; padding: 24px 16px 48px; }
     .top { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 4px; }
@@ -51,6 +54,12 @@
     .sub-btn { padding: 10px 16px; background: #fff; color: #ff7a45; border: 1px solid #ff7a45; }
     button:disabled { opacity: .55; cursor: wait; }
     .fav-toggle { flex-shrink: 0; padding: 8px 12px; font-size: .9rem; }
+    /* 작은 폰: 제목과 즐겨찾기 버튼이 양옆 여백 안에 들어가도록 조금 줄인다 */
+    @media (max-width: 360px) {
+      .top { gap: 8px; }
+      h1 { font-size: 1.15rem; }
+      .fav-toggle { padding: 6px 8px; font-size: .8rem; }
+    }
     .message { min-height: 1.5em; margin: 0 0 16px; text-align: center; color: #d9480f; font-weight: bold; }
 
     .notice { background: #fff4e6; border: 1px solid #ffd8a8; border-radius: 10px; padding: 10px 12px; margin-bottom: 12px; font-size: .9rem; }
@@ -71,7 +80,14 @@
     .missing.none { color: #2f9e44; }
     .card ol { margin: 0; padding-left: 20px; font-size: .92rem; }
     .card li { margin-bottom: 4px; }
-    .card .safety { margin: 10px 0 0; font-size: .8rem; color: #999; }
+    /* AI 추천 카드의 안전 안내: 눈에 띄되 과하지 않게 (연한 주황 배경 + 왼쪽 줄) */
+    .card .safety {
+      margin: 12px 0 0; padding: 6px 10px; font-size: .85rem; font-weight: 600;
+      color: #9a3412; background: #fff7ed; border-left: 3px solid #fb923c; border-radius: 6px;
+    }
+    /* AI를 못 써서 기본 레시피로 보여 줄 때의 작은 안내 */
+    .fallback-notice { margin: 0 0 12px; padding: 8px 12px; font-size: .88rem; color: #555; background: #f1f3f5; border-radius: 8px; }
+    .fav-hint { margin: -4px 0 12px; }
 
     .again-row { text-align: center; margin-top: 16px; }
     #favorites h2 { display: flex; justify-content: space-between; align-items: center; }
@@ -89,6 +105,7 @@
     <!-- 즐겨찾기 목록 (버튼을 누르면 열림) -->
     <section id="favorites" hidden>
       <h2>⭐ 즐겨찾기 <button id="favClose" class="link-btn" type="button">닫기</button></h2>
+      <p class="hint fav-hint">이 브라우저에만 저장돼요 (다른 기기와 공유되지 않아요).</p>
       <div id="favList" class="results"></div>
     </section>
 
@@ -119,6 +136,7 @@
         <p>⚠️ AI 추천이므로 조리 전 재료와 익힘 정도를 확인하세요.</p>
         <p>고기·달걀·해산물은 속까지 충분히 익히고, 알레르기가 있는 재료는 빼 주세요. 불과 칼을 쓸 때는 조심하세요.</p>
       </div>
+      <p id="fallbackNotice" class="fallback-notice" hidden>지금은 AI가 바빠서 기본 레시피로 보여드려요. 잠시 뒤 다시 눌러 보세요.</p>
       <div id="results" class="results" aria-live="polite"></div>
       <div class="again-row">
         <button id="againBtn" class="sub-btn" type="button">🔄 다시 추천 (다른 메뉴 보기)</button>
@@ -336,17 +354,21 @@
       if (isAI) {
         const safety = document.createElement("p");
         safety.className = "safety";
-        safety.textContent = "AI 추천이므로 조리 전 재료와 익힘 정도를 확인하세요.";
+        safety.textContent = "⚠️ AI 추천이므로 조리 전 재료와 익힘 정도를 확인하세요.";
         card.appendChild(safety);
       }
       return card;
     }
 
-    function showResults(menus, source) {
+    // reason: 서버가 알려 준 대체 경로 이유 ("offline" = 서버에 연결 못 함, 화면에서 붙인 값)
+    function showResults(menus, source, reason) {
       const results = $("results");
       results.innerHTML = "";
       menus.forEach((m) => results.appendChild(makeCard({ ...m, source })));
       $("aiNotice").hidden = source !== "ai";
+      // AI를 못 써서 기본 레시피가 나온 경우에만 안내. 키가 없을 때(no_key)와
+      // 서버 연결 실패(offline, 이미 연결 안내가 나옴)는 제외한다.
+      $("fallbackNotice").hidden = !(source === "fallback" && reason !== "no_key" && reason !== "offline");
       $("resultArea").hidden = false;
       refreshStars();
       // 3단계: 결과(레시피)로 화면을 자동으로 내려 준다.
@@ -355,11 +377,22 @@
 
     // ---------- 서버 호출 ----------
 
+    // 6초가 지나도 응답이 없으면 로딩 문구를 바꿔 기다릴 수 있게 안내한다. (버튼은 계속 비활성화)
+    const SLOW_NOTICE_MS = 6 * 1000;
+    let slowTimer = null;
+
     function setLoading(on) {
+      const label = $("recommendBtn").lastChild;
       $("recommendBtn").disabled = on;
       $("againBtn").disabled = on;
-      $("recommendBtn").lastChild.textContent = on ? "추천 중이에요… ⏳" : "추천받기";
+      label.textContent = on ? "추천 중이에요… ⏳" : "추천받기";
       $("resultArea").setAttribute("aria-busy", String(on));
+      clearTimeout(slowTimer);
+      if (on) {
+        slowTimer = setTimeout(() => {
+          label.textContent = "AI가 열심히 찾는 중이에요… (최대 15초 걸릴 수 있어요)";
+        }, SLOW_NOTICE_MS);
+      }
     }
 
     // 서버에 보낼 제외 목록: 서버 제한(30자)을 넘는 이름만 뺀다. 개수 제한은 recommend()에서 확인.
@@ -401,7 +434,7 @@
 
       setMessage("");
       setLoading(true);
-      let menus, source;
+      let menus, source, reason;
       let emptyMessage; // 메뉴가 0개일 때 보여 줄 문구
       try {
         const data = await requestRecommend(exclude);
@@ -411,6 +444,7 @@
         }
         menus = data.menus;
         source = data.source === "ai" ? "ai" : "fallback";
+        reason = data.reason;
         // no_match 에 cause 가 없으면 AI는 정상 응답했지만 새 메뉴가 0개인 경우,
         // cause 가 있으면(ai_error, ai_quota, daily_limit, no_key 등) AI를 쓰지 못한 경우
         emptyMessage = data.reason === "no_match" && !data.cause
@@ -420,6 +454,7 @@
         // 서버에 닿지 못함(인터넷 끊김, 파일로 직접 열었을 때 등) → 브라우저 안의 기본 레시피로
         menus = recommendFromRecipes([...selected], mood, exclude);
         source = "fallback";
+        reason = "offline";
         setMessage("서버에 연결하지 못했어요. 인터넷 연결을 확인해 주세요. 우선 기본 레시피로 보여 드릴게요.");
         emptyMessage = "서버에 연결하지 못했어요. 인터넷 연결을 확인하고 잠시 뒤 다시 눌러 주세요.";
       } finally {
@@ -441,7 +476,7 @@
         setMessage([$("message").textContent, note].filter(Boolean).join(" "));
       }
       shownNames.push(...menus.map((m) => m.name));
-      showResults(menus, source);
+      showResults(menus, source, reason);
     }
 
     $("recommendBtn").addEventListener("click", () => recommend(false));
