@@ -131,6 +131,10 @@ const reply = (obj, status = 200) => async () => ({ ok: status === 200, status,
   });
   const hang = after(60000, () => null);
   const ok3 = reply(mk(["P", "Q", "R"]));
+  // 시계만 ms 앞으로 돌리고 fn 실행: 실제로 기다리지 않고 "시간이 그만큼 지난" 상황을 만든다. (끝나면 resetClock)
+  const realNow = Date.now;
+  const jump = (ms, fn) => (url, opts) => { const base = Date.now; Date.now = () => base() + ms; return fn(url, opts); };
+  const resetClock = () => { Date.now = realNow; };
   // fetch 응답 순서를 정해 두고, 호출된 모델 주소를 기록
   let urls = [];
   const script = (...steps) => { urls = []; let i = 0; global.fetch = (url, opts) => { urls.push(url); return steps[Math.min(i++, steps.length - 1)](url, opts); }; };
@@ -165,17 +169,20 @@ const reply = (obj, status = 200) => async () => ({ ok: status === 200, status,
   check("6-f 예비 모델이 기본 모델과 같으면 건너뜀", urls.length === 2);
   process.env.GEMINI_FALLBACK_MODEL = "backup-model";
 
+  delete process.env.GEMINI_FALLBACK_MODEL;
   script(hang);
   t = await timed("무응답", "6.6.6.7");
-  check("6-g 응답 없음 → 10초에 끊고 재시도 없이 기본 레시피", t.r.data.source === "fallback" && urls.length === 1 && t.sec >= 9.9 && t.sec < 11, t.sec + "초");
+  check("6-g 응답 없음, 예비 모델 없음 → 6.5초에 끊고 재시도 없이 기본 레시피", t.r.data.source === "fallback" && urls.length === 1 && t.sec >= 6.4 && t.sec < 7.5, t.sec + "초");
+  process.env.GEMINI_FALLBACK_MODEL = "backup-model";
 
-  script(after(8000, reply({}, 503)), hang);
+  script(after(6000, reply({}, 503)), hang);
   t = await timed("느린과부하", "6.6.6.8");
-  check("6-h 8초 뒤 503 → 남은 시간만큼만 재시도, 15초 안에 응답", t.r.data.source === "fallback" && urls.length === 2 && t.sec < 15, t.sec + "초, " + urls.length + "회");
+  check("6-h 6초 뒤 503 → 남은 시간만큼만 재시도, 재시도 시간 초과면 예비 모델 없이 15초 안에 응답", t.r.data.source === "fallback" && urls.length === 2 && t.sec < 15, t.sec + "초, " + urls.length + "회");
 
-  script(after(9700, reply({}, 503)), ok3);
+  script(jump(9700, reply({}, 503)), ok3);
   t = await timed("시간부족", "6.6.6.9");
-  check("6-i 9.7초 뒤 503 → 남은 시간 부족, 재시도 없이 기본 레시피", t.r.data.source === "fallback" && urls.length === 1 && t.sec < 11, t.sec + "초");
+  resetClock();
+  check("6-i 9.7초 지난 뒤 503 → 남은 시간 부족, 재시도 없이 기본 레시피", t.r.data.source === "fallback" && urls.length === 1 && t.sec < 11, t.sec + "초");
 
   script(reply({}, 503), reply({}, 429));
   t = await timed("과부하후한도", "6.6.7.1");
@@ -287,6 +294,115 @@ const reply = (obj, status = 200) => async () => ({ ok: status === 200, status,
 
   aiSays(["밥요리1", "밥요리2", "밥요리3"]); await call({ ingredients: ["밥", "9-f"] }, { ip: "8.9.0.6" });
   check("9-f 프롬프트에 '실제로 해 먹을 메뉴 먼저, 음료·디저트·과자류는 뒤쪽' 규칙", prompts[0].includes("한 끼 식사나 반찬으로 실제로 해 먹을 만한 메뉴를 앞쪽에") && prompts[0].includes("음료·디저트·과자류(라떼, 칩, 퓨레 등)"));
+
+  // ===== 첫 시도 시간 초과 → 예비 모델 =====
+  const timeoutPrompts = () => { const sent = []; return { sent, track: (fn) => (url, opts) => { sent.push(JSON.parse(opts.body).contents[0].parts[0].text); return fn(url, opts); } }; };
+
+  logs.length = 0; const tp = timeoutPrompts(); script(tp.track(hang), tp.track(ok3));
+  t = await timed("느린재료1", "8.9.1.1");
+  check("10-a 기본 모델 6초 넘게 응답 없음 → 예비 모델 성공", t.r.data.source === "ai" && urls.map(model).join() === "gemini-3.8-flash,backup-model" && t.sec >= 6.4 && t.sec < 7.5, t.sec + "초");
+  check("10-a 시도·성공 로그", backupLogs().join("|") === "예비 모델 시도(시간 초과 후): backup-model|예비 모델 성공: backup-model (새 메뉴 3개)", backupLogs().join(" / "));
+  check("10-a 예비 모델에는 '다시 요청' 문구 없는 첫 프롬프트", tp.sent.length === 2 && tp.sent[1] === tp.sent[0] && !tp.sent[1].includes("다시 요청"));
+
+  logs.length = 0; script(hang, http(500));
+  t = await timed("느린재료2", "8.9.1.2");
+  check("10-b 예비 모델도 실패(500) → 기본 레시피 + 시도·실패 로그", (t.r.data.cause || t.r.data.reason) === "ai_error" && t.r.data.source === "fallback" && urls.length === 2 &&
+    backupLogs().join("|") === "예비 모델 시도(시간 초과 후): backup-model|예비 모델 실패: backup-model - HTTP 500", backupLogs().join(" / "));
+
+  logs.length = 0; script(hang, hang);
+  t = await timed("느린재료3", "8.9.1.3");
+  check("10-c 예비 모델도 응답 없음 → 남은 시간까지만 기다리고 15초 안에 기본 레시피", t.r.data.source === "fallback" && urls.length === 2 && t.sec >= 13.5 && t.sec < 15 &&
+    backupLogs().at(-1) === "예비 모델 실패: backup-model - 시간 초과", t.sec + "초");
+
+  // 실제로는 6.5초에 끊겨 7.5초가 남으므로, 시계를 돌려 남은 시간이 적은 상황을 만든다.
+  logs.length = 0; script(jump(10500, () => { throw abortErr(); }), ok3);
+  t = await timed("느린재료4", "8.9.1.4");
+  resetClock();
+  check("10-d 남은 시간 3.5초 → 예비 모델 건너뜀 + 로그, 호출 안 함", t.r.data.source === "fallback" && urls.length === 1 &&
+    backupLogs().join("|") === "예비 모델 건너뜀(남은 시간 부족): backup-model", backupLogs().join(" / "));
+
+  logs.length = 0; script(jump(9500, () => { throw abortErr(); }), ok3);
+  t = await timed("느린재료5", "8.9.1.5");
+  resetClock();
+  check("10-e 남은 시간 4.5초 → 예비 모델 시도", t.r.data.source === "ai" && urls.length === 2, backupLogs().join(" / "));
+
+  logs.length = 0; script(hang, http(429));
+  t = await timed("느린재료6", "8.9.1.6");
+  check("10-f 시간 초과 후 예비 모델이 429 → ai_quota", (t.r.data.cause || t.r.data.reason) === "ai_quota" && urls.length === 2);
+
+  logs.length = 0; script(http(429), ok3);
+  t = await timed("느린재료7", "8.9.1.7");
+  check("10-g 첫 시도 429는 예비 모델 설정이 있어도 재시도 없이 ai_quota", (t.r.data.cause || t.r.data.reason) === "ai_quota" && urls.length === 1 && backupLogs().length === 0);
+
+  process.env.GEMINI_FALLBACK_MODEL = "gemini-3.8-flash";
+  logs.length = 0; script(() => { throw abortErr(); }, ok3);
+  t = await timed("느린재료8", "8.9.1.8");
+  check("10-h 예비 모델이 기본 모델과 같으면 시간 초과 후에도 시도 안 함", t.r.data.source === "fallback" && urls.length === 1 && backupLogs().length === 0);
+  process.env.GEMINI_FALLBACK_MODEL = "backup-model";
+
+  logs.length = 0; script(() => { throw abortErr(); }, http(503)); await timed("느린재료9", "8.9.1.9");
+  check("10-i 시간 초과 로그에 키·재료 없음", logs.length > 0 && !/fake-key-for-test|느린재료/.test(logs.join(" ")), logs.length + "줄");
+
+  // ===== 예비 모델이 thinking 설정을 몰라 400 =====
+  const badRequest = (message) => () => ({ ok: false, status: 400, json: async () => ({ error: { code: 400, message, status: "INVALID_ARGUMENT" } }) });
+  const thinking400 = badRequest("Unknown name \"thinkingLevel\" at 'generation_config.thinking_config': Cannot find field.");
+  const timeout = () => { throw abortErr(); };
+  const RETRY_LOG = "예비 모델 thinking 설정 제외 후 재시도: backup-model";
+  let sentThinking = [];
+  const rec = (fn) => (url, opts) => { const b = JSON.parse(opts.body); sentThinking.push({ thinking: !!b.generationConfig.thinkingConfig, prompt: b.contents[0].parts[0].text }); return fn(url, opts); };
+
+  logs.length = 0; sentThinking = []; script(timeout, rec(thinking400), rec(ok3));
+  t = await timed("설정재료1", "8.9.2.1");
+  check("11-a 시간 초과 후 예비 모델 설정 400 → 설정 빼고 성공", t.r.data.source === "ai" && urls.map(model).join() === "gemini-3.8-flash,backup-model,backup-model" &&
+    backupLogs().join("|") === "예비 모델 시도(시간 초과 후): backup-model|" + RETRY_LOG + "|예비 모델 성공: backup-model (새 메뉴 3개)", backupLogs().join(" / "));
+  check("11-a 첫 요청엔 설정 있고 재시도엔 없음, 프롬프트는 같음", sentThinking.length === 2 && sentThinking[0].thinking && !sentThinking[1].thinking && sentThinking[0].prompt === sentThinking[1].prompt);
+  check("11-a 로그에 키·재료·오류 본문 없음", !/fake-key-for-test|설정재료|thinkingLevel|Cannot find/.test(logs.join(" ")), logs.length + "줄");
+
+  logs.length = 0; sentThinking = []; script(http(503), http(503), rec(thinking400), rec(ok3));
+  t = await timed("설정재료2", "8.9.2.2");
+  check("11-b 503 두 번 후 예비 모델 설정 400 → 설정 빼고 성공", t.r.data.source === "ai" && urls.length === 4 && sentThinking[0].thinking && !sentThinking[1].thinking && sentThinking[0].prompt === sentThinking[1].prompt &&
+    backupLogs().join("|") === "예비 모델 시도: backup-model (기본 모델 gemini-3.8-flash 503 두 번)|" + RETRY_LOG + "|예비 모델 성공: backup-model (새 메뉴 3개)", backupLogs().join(" / "));
+
+  logs.length = 0; script(timeout, thinking400, http(500), ok3);
+  t = await timed("설정재료3", "8.9.2.3");
+  check("11-c 설정 빼고도 실패(500) → 기본 레시피, 더 시도 안 함", t.r.data.source === "fallback" && urls.length === 3 && backupLogs().at(-1) === "예비 모델 실패: backup-model - HTTP 500", backupLogs().at(-1));
+
+  logs.length = 0; script(timeout, thinking400, thinking400, ok3);
+  t = await timed("설정재료4", "8.9.2.4");
+  check("11-d 설정 빼고도 또 설정 400 → 재시도는 한 번뿐", t.r.data.source === "fallback" && urls.length === 3 && backupLogs().filter(l => l === RETRY_LOG).length === 1 && backupLogs().at(-1) === "예비 모델 실패: backup-model - HTTP 400", urls.length + "회");
+
+  logs.length = 0; script(timeout, thinking400, http(429), ok3);
+  t = await timed("설정재료5", "8.9.2.5");
+  check("11-e 설정 빼고 보낸 요청이 429 → ai_quota, 더 시도 안 함", (t.r.data.cause || t.r.data.reason) === "ai_quota" && urls.length === 3);
+
+  logs.length = 0; script(timeout, badRequest("API key not valid. Please pass a valid API key."), ok3);
+  t = await timed("설정재료6", "8.9.2.6");
+  check("11-f 다른 사유의 400(시간 초과 경로) → 재시도 안 함", t.r.data.source === "fallback" && urls.length === 2 && !backupLogs().includes(RETRY_LOG) && backupLogs().at(-1) === "예비 모델 실패: backup-model - HTTP 400", backupLogs().join(" / "));
+
+  logs.length = 0; script(http(503), http(503), badRequest("Invalid value at 'generation_config.response_schema'"), ok3);
+  t = await timed("설정재료7", "8.9.2.7");
+  check("11-g 다른 사유의 400(503 경로) → 재시도 안 함", t.r.data.source === "fallback" && urls.length === 3 && !backupLogs().includes(RETRY_LOG), urls.length + "회");
+
+  logs.length = 0; script(timeout, http(400), ok3);
+  t = await timed("설정재료8", "8.9.2.8");
+  check("11-h 오류 설명 없는 400 → 재시도 안 함", t.r.data.source === "fallback" && urls.length === 2 && !backupLogs().includes(RETRY_LOG));
+
+  logs.length = 0; script(timeout, () => ({ ok: false, status: 400, json: async () => { throw new SyntaxError("not json"); } }), ok3);
+  t = await timed("설정재료9", "8.9.3.1");
+  check("11-i 본문이 JSON이 아닌 400 → 재시도 안 함", t.r.data.source === "fallback" && urls.length === 2 && !backupLogs().includes(RETRY_LOG));
+
+  logs.length = 0; script(timeout, http(429), ok3);
+  t = await timed("설정재료10", "8.9.3.2");
+  check("11-j 예비 모델 429 → 재시도 안 함", (t.r.data.cause || t.r.data.reason) === "ai_quota" && urls.length === 2 && !backupLogs().includes(RETRY_LOG));
+
+  logs.length = 0; script(timeout, jump(11500, thinking400), ok3);
+  t = await timed("설정재료11", "8.9.3.3");
+  resetClock();
+  check("11-k 남은 시간 2.5초 → 설정 400이어도 재시도 안 함", t.r.data.source === "fallback" && urls.length === 2 && !backupLogs().includes(RETRY_LOG) && backupLogs().at(-1) === "예비 모델 실패: backup-model - HTTP 400", backupLogs().join(" / "));
+
+  logs.length = 0; script(hang, after(2000, thinking400), hang);
+  t = await timed("설정재료12", "8.9.3.4");
+  check("11-l 재시도도 응답 없음 → 남은 시간까지만 기다리고 15초 안에 기본 레시피", t.r.data.source === "fallback" && urls.length === 3 && t.sec >= 13.5 && t.sec < 15 && backupLogs().at(-1) === "예비 모델 실패: backup-model - 시간 초과", t.sec + "초");
 
   delete process.env.GEMINI_FALLBACK_MODEL;
   console.warn = origWarn;

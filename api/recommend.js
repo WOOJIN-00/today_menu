@@ -24,10 +24,13 @@ const ALLOWED_MOODS = ["", "빠르게", "든든", "가벼움", "매콤", "국물
 const DAILY_LIMIT_PER_IP = 20;
 const CACHE_TTL_MS = 10 * 60 * 1000; // 10분
 const CACHE_MAX_ENTRIES = 200;
-// AI 대기 시간: 한 번에 최대 10초, 재시도·예비 모델 포함 전체 14초 (응답은 15초 안에)
+// AI 대기 시간: 기본 모델 첫 시도 6.5초, 그 뒤 시도는 한 번에 최대 10초,
+// 재시도·예비 모델 포함 전체 14초 (응답은 15초 안에)
+const AI_FIRST_ATTEMPT_TIMEOUT_MS = 6500;
 const AI_ATTEMPT_TIMEOUT_MS = 10 * 1000;
 const AI_TOTAL_BUDGET_MS = 14 * 1000;
 const MIN_RETRY_TIME_MS = 3 * 1000; // 남은 시간이 이보다 적으면 재시도하지 않음
+const MIN_BACKUP_AFTER_TIMEOUT_MS = 4 * 1000; // 첫 시도 시간 초과 후 남은 시간이 이보다 적으면 예비 모델을 건너뜀
 const OVERLOAD_RETRY_DELAY_MS = 1500; // 503(과부하) 후 재시도 전 잠깐 쉬는 시간
 
 // 메모리 저장소: 서버가 켜져 있는 동안만 유지된다.
@@ -186,9 +189,20 @@ const RESPONSE_SCHEMA = {
 };
 
 class GeminiError extends Error {
-  constructor(message, status) {
+  constructor(message, status, thinkingRejected = false) {
     super(message);
     this.status = status;
+    this.thinkingRejected = thinkingRejected;
+  }
+}
+
+// 400 응답의 오류 설명에 thinking 설정이 언급되면 true. (본문은 판단에만 쓰고 로그에 남기지 않는다)
+async function isThinkingRejection(res) {
+  try {
+    const data = await res.json();
+    return /thinking/i.test(JSON.stringify(data?.error));
+  } catch {
+    return false;
   }
 }
 
@@ -218,7 +232,10 @@ async function callGemini(prompt, { model, timeoutMs, useLowThinking }) {
       signal: controller.signal,
     });
 
-    if (!res.ok) throw new GeminiError(`Gemini HTTP ${res.status}`, res.status);
+    if (!res.ok) {
+      const thinkingRejected = res.status === 400 && await isThinkingRejection(res);
+      throw new GeminiError(`Gemini HTTP ${res.status}`, res.status, thinkingRejected);
+    }
 
     const data = await res.json();
     const parts = data?.candidates?.[0]?.content?.parts || [];
@@ -293,11 +310,11 @@ function parseMenus(text, exclude, label) {
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // 시도 순서 (모두 합쳐 14초 안에, 남은 시간이 부족하면 바로 기본 레시피로)
-//   ① 기본 모델
+//   ① 기본 모델 (6.5초 제한)
 //   ② 기본 모델 재시도 1회 (503 과부하면 1.5초 쉬고)
 //   ③ 기본 모델이 계속 503이고 GEMINI_FALLBACK_MODEL 이 있으면 그 모델로 1회
 // - 한도 초과(429)는 다시 해도 소용없으니 바로 포기
-// - 시간 초과면 재시도하지 않음
+// - ①이 시간 초과면 기본 모델은 재시도하지 않고, 예비 모델이 있고 4초 이상 남았을 때 그 모델로 1회
 async function recommendWithAI(input) {
   const firstPrompt = buildPrompt(input);
   const retryPrompt = buildPrompt(input, true);
@@ -306,11 +323,11 @@ async function recommendWithAI(input) {
   const backupModel = process.env.GEMINI_FALLBACK_MODEL;
   let useLowThinking = true;
 
-  // 한 번 시도하고 결과를 { menus } / { noNew } / { status, timedOut } 로 돌려준다.
+  // 한 번 시도하고 결과를 { menus } / { noNew } / { status, timedOut, thinkingRejected } 로 돌려준다.
   // 첫 시도가 아니면 재시도용 프롬프트(제외 메뉴 목록·다양성 지시 추가)를 쓴다.
-  async function attempt(model, label, isRetry) {
+  async function attempt(model, label, isRetry, maxWaitMs = AI_ATTEMPT_TIMEOUT_MS) {
     try {
-      const timeoutMs = Math.min(AI_ATTEMPT_TIMEOUT_MS, deadline - Date.now());
+      const timeoutMs = Math.min(maxWaitMs, deadline - Date.now());
       const prompt = isRetry ? retryPrompt : firstPrompt;
       const parsed = parseMenus(await callGemini(prompt, { model, timeoutMs, useLowThinking }), input.exclude, label);
       if (parsed?.menus) return { menus: parsed.menus };
@@ -319,16 +336,51 @@ async function recommendWithAI(input) {
     } catch (err) {
       const timedOut = err.name === "AbortError";
       console.warn(`AI 호출 실패 (${label}): ${timedOut ? "시간 초과" : err.message}`);
-      return { status: err.status, timedOut };
+      return { status: err.status, timedOut, thinkingRejected: err.thinkingRejected };
     }
   }
   const hasTimeFor = (waitMs = 0) => deadline - Date.now() - waitMs >= MIN_RETRY_TIME_MS;
+  const hasBackup = backupModel && backupModel !== primaryModel;
+
+  // 예비 모델 시도. 로그에는 모델 이름과 사유만 남긴다. (키·재료·메뉴 이름은 남기지 않음)
+  // thinking 설정 때문에 400이 나면, 시간이 남았을 때만 설정을 빼고 한 번 더 보낸다.
+  async function tryBackup(startLog, isRetry) {
+    const label = `예비 모델 ${backupModel}`;
+    console.warn(startLog);
+    let backup = await attempt(backupModel, label, isRetry);
+    if (backup.thinkingRejected && hasTimeFor()) {
+      console.warn(`예비 모델 thinking 설정 제외 후 재시도: ${backupModel}`);
+      useLowThinking = false;
+      backup = await attempt(backupModel, label, isRetry);
+    }
+    if (backup.menus) {
+      console.warn(`예비 모델 성공: ${backupModel} (새 메뉴 ${backup.menus.length}개)`);
+      return backup;
+    }
+    const why = backup.timedOut ? "시간 초과"
+      : backup.status ? `HTTP ${backup.status}`
+      : backup.noNew ? "새 메뉴 0개"
+      : "응답 검증 실패";
+    console.warn(`예비 모델 실패: ${backupModel} - ${why}`);
+    return backup;
+  }
 
   // ① 기본 모델
-  let result = await attempt(primaryModel, "1차", false);
+  let result = await attempt(primaryModel, "1차", false, AI_FIRST_ATTEMPT_TIMEOUT_MS);
   if (result.menus) return result;
   if (result.status === 429) return { reason: "ai_quota" };
-  if (result.timedOut) return { reason: "ai_error" };
+  if (result.timedOut) {
+    if (!hasBackup) return { reason: "ai_error" };
+    if (deadline - Date.now() < MIN_BACKUP_AFTER_TIMEOUT_MS) {
+      console.warn(`예비 모델 건너뜀(남은 시간 부족): ${backupModel}`);
+      return { reason: "ai_error" };
+    }
+    // 첫 시도의 답을 받지 못했으므로 "다시 요청" 문구 없는 첫 프롬프트를 그대로 보낸다.
+    result = await tryBackup(`예비 모델 시도(시간 초과 후): ${backupModel}`, false);
+    if (result.menus) return result;
+    if (result.status === 429) return { reason: "ai_quota" };
+    return { reason: "ai_error", noNew: result.noNew };
+  }
 
   // ② 기본 모델 재시도
   const overloaded = result.status === 503;
@@ -341,22 +393,12 @@ async function recommendWithAI(input) {
   if (result.status === 429) return { reason: "ai_quota" };
 
   // ③ 예비 모델 (기본 모델이 두 번 다 과부하일 때만)
-  //    로그에는 모델 이름과 사유만 남긴다. (키·재료·메뉴 이름은 남기지 않음)
-  if (overloaded && result.status === 503 && backupModel && backupModel !== primaryModel) {
+  if (overloaded && result.status === 503 && hasBackup) {
     if (!hasTimeFor()) {
       console.warn(`예비 모델 건너뜀: ${backupModel} - 남은 시간 부족`);
     } else {
-      console.warn(`예비 모델 시도: ${backupModel} (기본 모델 ${primaryModel} 503 두 번)`);
-      result = await attempt(backupModel, `예비 모델 ${backupModel}`, true);
-      if (result.menus) {
-        console.warn(`예비 모델 성공: ${backupModel} (새 메뉴 ${result.menus.length}개)`);
-        return result;
-      }
-      const why = result.timedOut ? "시간 초과"
-        : result.status ? `HTTP ${result.status}`
-        : result.noNew ? "새 메뉴 0개"
-        : "응답 검증 실패";
-      console.warn(`예비 모델 실패: ${backupModel} - ${why}`);
+      result = await tryBackup(`예비 모델 시도: ${backupModel} (기본 모델 ${primaryModel} 503 두 번)`, true);
+      if (result.menus) return result;
       if (result.status === 429) return { reason: "ai_quota" };
     }
   }
