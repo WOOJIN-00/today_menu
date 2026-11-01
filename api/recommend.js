@@ -127,13 +127,26 @@ function useQuota(ip) {
 
 // ---------- 4. Gemini 호출과 결과 검사 ----------
 
-function buildPrompt({ ingredients, mood, exclude }) {
+// AI에게는 후보를 5개 받아, 서버가 제외 메뉴·중복을 걸러낸 뒤 앞에서 3개를 쓴다.
+const AI_CANDIDATES = 5;
+const MENUS_TO_SHOW = 3;
+
+// isRetry: 재시도 때는 이미 나온 메뉴를 목록으로 다시 적고 다양하게 내라고 강조한다.
+function buildPrompt({ ingredients, mood, exclude }, isRetry = false) {
+  const retryRules = !isRetry ? [] : [
+    "",
+    "중요 (다시 요청하는 것입니다):",
+    ...(exclude.length
+      ? ["- 아래 메뉴는 이미 나왔다. 이름이 같거나 띄어쓰기만 다른 메뉴도 절대 쓰지 않는다.", ...exclude.map((n) => `  · ${n}`)]
+      : []),
+    "- 재료가 적어도 조리법이나 형태가 다른 메뉴(국, 죽, 구이, 샐러드, 튀김 등)로 다양하게 제안하고, 이미 나온 이름은 절대 쓰지 않는다.",
+  ];
   // 개인정보 없이 재료·기분·제외 메뉴만 보낸다.
   return [
-    "당신은 한국 가정식 요리 도우미입니다. 아래 조건으로 메뉴 3개를 추천하세요.",
+    `당신은 한국 가정식 요리 도우미입니다. 아래 조건으로 메뉴 후보 ${AI_CANDIDATES}개를 추천하세요.`,
     "",
     "규칙:",
-    "- 주어진 재료 위주로 만들 수 있는 메뉴 3개를 추천한다.",
+    `- 주어진 재료 위주로 만들 수 있는 서로 다른 메뉴 후보 ${AI_CANDIDATES}개를, 잘 어울리는 순서대로 추천한다.`,
     "- 소금, 설탕, 후추, 간장, 고추장, 된장, 고춧가루, 다진마늘, 식용유, 참기름, 식초, 케첩, 마요네즈 같은 기본 양념은 있다고 가정한다.",
     "- ingredients에는 기본 양념을 제외한 주재료를 적는다.",
     "- missing에는 ingredients 중 사용자가 가지고 있지 않은 재료를 적는다. 없으면 빈 배열.",
@@ -141,6 +154,7 @@ function buildPrompt({ ingredients, mood, exclude }) {
     "- time_min은 분 단위 정수, steps는 3~6개의 짧은 한국어 문장으로 쓴다.",
     "- 안전한 조리법만 제안한다.",
     "- 지정한 JSON 형식으로만 응답한다.",
+    ...retryRules,
     "",
     "입력(JSON):",
     JSON.stringify({ 재료: ingredients, 기분_상황: mood || "상관없음", 제외_메뉴: exclude }),
@@ -215,41 +229,59 @@ async function callGemini(prompt, { model, timeoutMs, useLowThinking }) {
 const isStringList = (v, allowEmpty) =>
   Array.isArray(v) && (allowEmpty || v.length > 0) && v.every((s) => typeof s === "string" && s.trim());
 
-// AI 응답 글자를 검사해서 올바르면 메뉴 3개를, 아니면 null을 돌려준다.
-function parseMenus(text, exclude) {
+const hasRequiredFields = (m) =>
+  typeof m?.name === "string" && m.name.trim() &&
+  Number.isFinite(m.time_min) && m.time_min > 0 &&
+  isStringList(m.ingredients, false) &&
+  isStringList(m.missing, true) &&
+  isStringList(m.steps, false);
+
+// 메뉴 이름 비교용: 띄어쓰기·대소문자 차이는 같은 메뉴로 본다 ("단호박 죽" = "단호박죽")
+const sameName = (name) => normalizeForKey(name).replace(/ /g, "");
+
+// AI 응답 글자를 검사해서 쓸 수 있는 새 메뉴를 최대 3개 돌려준다. 하나도 없으면 null.
+// - 형식이 틀린 후보, 제외 메뉴와 같은 후보, 후보끼리 중복은 그 후보만 버린다.
+// - 걸러낸 이유는 개수만 로그에 남긴다. (사용자 입력·메뉴 이름은 남기지 않음)
+function parseMenus(text, exclude, label) {
+  const warn = (msg) => console.warn(`AI 응답 검증 (${label}): ${msg}`);
   let data;
   try {
     data = JSON.parse(text);
   } catch {
-    return null; // JSON으로 읽을 수 없음
+    warn("JSON 파싱 실패");
+    return null;
   }
-  const menus = data?.menus;
-  if (!Array.isArray(menus) || menus.length !== 3) return null;
+  const candidates = data?.menus;
+  if (!Array.isArray(candidates) || candidates.length === 0) {
+    warn("필수 항목 누락 - menus 목록이 없음");
+    return null;
+  }
 
-  // 메뉴 이름 비교용: 띄어쓰기·대소문자 차이는 같은 메뉴로 본다 ("김치 볶음밥" = "김치볶음밥")
-  const sameName = (name) => normalizeForKey(name).replace(/ /g, "");
   const seen = new Set(exclude.map(sameName));
-
-  for (const m of menus) {
-    const ok =
-      typeof m?.name === "string" && m.name.trim() &&
-      Number.isFinite(m.time_min) && m.time_min > 0 &&
-      isStringList(m.ingredients, false) &&
-      isStringList(m.missing, true) &&
-      isStringList(m.steps, false) &&
-      !seen.has(sameName(m.name)); // 제외 메뉴이거나 3개 안에서 중복이면 실패
-    if (!ok) return null;
-    seen.add(sameName(m.name));
+  const menus = [];
+  let invalid = 0, excluded = 0, duplicate = 0;
+  for (const m of candidates) {
+    if (!hasRequiredFields(m)) { invalid++; continue; }
+    const key = sameName(m.name);
+    if (seen.has(key)) {
+      exclude.some((n) => sameName(n) === key) ? excluded++ : duplicate++;
+      continue;
+    }
+    seen.add(key);
+    menus.push({
+      name: m.name.trim(),
+      time_min: Math.round(m.time_min),
+      ingredients: m.ingredients,
+      missing: m.missing,
+      steps: m.steps,
+    });
   }
 
-  // 필요한 항목만 골라 깔끔하게 돌려준다.
-  return menus.map((m) => ({
-    name: m.name.trim(),
-    time_min: Math.round(m.time_min),
-    ingredients: m.ingredients,
-    missing: m.missing,
-    steps: m.steps,
-  }));
+  if (invalid) warn(`필수 항목 누락 ${invalid}개 버림`);
+  if (excluded) warn(`제외 메뉴 포함 ${excluded}개 버림`);
+  if (duplicate) warn(`후보끼리 중복 ${duplicate}개 버림`);
+  if (menus.length < MENUS_TO_SHOW) warn(`개수 부족 - 후보 ${candidates.length}개 중 새 메뉴 ${menus.length}개`);
+  return menus.length ? menus.slice(0, MENUS_TO_SHOW) : null;
 }
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -261,19 +293,22 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 // - 한도 초과(429)는 다시 해도 소용없으니 바로 포기
 // - 시간 초과면 재시도하지 않음
 async function recommendWithAI(input) {
-  const prompt = buildPrompt(input);
+  const firstPrompt = buildPrompt(input);
+  const retryPrompt = buildPrompt(input, true);
   const deadline = Date.now() + AI_TOTAL_BUDGET_MS;
   const primaryModel = process.env.GEMINI_MODEL || DEFAULT_MODEL;
   const backupModel = process.env.GEMINI_FALLBACK_MODEL;
   let useLowThinking = true;
 
   // 한 번 시도하고 결과를 { menus } 또는 { status, timedOut } 로 돌려준다.
-  async function attempt(model, label) {
+  // 첫 시도가 아니면 재시도용 프롬프트(제외 메뉴 목록·다양성 지시 추가)를 쓴다.
+  async function attempt(model, label, isRetry) {
     try {
       const timeoutMs = Math.min(AI_ATTEMPT_TIMEOUT_MS, deadline - Date.now());
-      const menus = parseMenus(await callGemini(prompt, { model, timeoutMs, useLowThinking }), input.exclude);
+      const prompt = isRetry ? retryPrompt : firstPrompt;
+      const menus = parseMenus(await callGemini(prompt, { model, timeoutMs, useLowThinking }), input.exclude, label);
       if (menus) return { menus };
-      console.warn(`AI 응답 검증 실패 (${label})`);
+      console.warn(`AI 응답 검증 실패 (${label}): 쓸 수 있는 새 메뉴 0개`);
       return {};
     } catch (err) {
       const timedOut = err.name === "AbortError";
@@ -284,7 +319,7 @@ async function recommendWithAI(input) {
   const hasTimeFor = (waitMs = 0) => deadline - Date.now() - waitMs >= MIN_RETRY_TIME_MS;
 
   // ① 기본 모델
-  let result = await attempt(primaryModel, "1차");
+  let result = await attempt(primaryModel, "1차", false);
   if (result.menus) return result;
   if (result.status === 429) return { reason: "ai_quota" };
   if (result.timedOut) return { reason: "ai_error" };
@@ -295,13 +330,13 @@ async function recommendWithAI(input) {
   if (result.status === 400) useLowThinking = false; // 생각 단계 설정을 모르는 모델일 수 있음
   if (!hasTimeFor(waitMs)) return { reason: "ai_error" };
   await sleep(waitMs);
-  result = await attempt(primaryModel, "재시도");
+  result = await attempt(primaryModel, "재시도", true);
   if (result.menus) return result;
   if (result.status === 429) return { reason: "ai_quota" };
 
   // ③ 예비 모델 (기본 모델이 두 번 다 과부하일 때만)
   if (overloaded && result.status === 503 && backupModel && backupModel !== primaryModel && hasTimeFor()) {
-    result = await attempt(backupModel, `예비 모델 ${backupModel}`);
+    result = await attempt(backupModel, `예비 모델 ${backupModel}`, true);
     if (result.menus) return result;
     if (result.status === 429) return { reason: "ai_quota" };
   }
@@ -310,6 +345,9 @@ async function recommendWithAI(input) {
 
 // ---------- 5. 대체 경로 ----------
 
+// recommendFromRecipes 는 고른 재료와 하나라도 겹치는 레시피만 돌려준다.
+// 겹치는 게 하나도 없으면 엉뚱한 메뉴로 채우지 않고 빈 목록 + reason "no_match" 로 응답한다.
+// (cause: 원래 대체 경로로 온 이유 - no_key, ai_error 등)
 function fallback(input, reason) {
   const menus = recommendFromRecipes(input.ingredients, input.mood, input.exclude).map((m) => ({
     name: m.name,
@@ -318,7 +356,16 @@ function fallback(input, reason) {
     missing: m.missing,
     steps: m.steps,
   }));
-  return { source: "fallback", reason, menus };
+  if (menus.length === 0) {
+    console.warn(`기본 레시피 대체: 겹치는 재료가 있는 메뉴 없음 (원래 이유: ${reason})`);
+    return { source: "fallback", reason: "no_match", cause: reason, menus: [] };
+  }
+  return withPartial({ source: "fallback", reason, menus });
+}
+
+// 메뉴가 3개보다 적으면 partial: true 를 붙여 화면이 안내 문구를 띄울 수 있게 한다.
+function withPartial(response) {
+  return response.menus.length < MENUS_TO_SHOW ? { ...response, partial: true } : response;
 }
 
 // ---------- 서버 함수 본체 ----------
@@ -348,7 +395,7 @@ module.exports = async function handler(req, res) {
 
     const key = cacheKey(input);
     const cached = getCached(key);
-    if (cached) return res.status(200).json({ source: "ai", cached: true, menus: cached });
+    if (cached) return res.status(200).json(withPartial({ source: "ai", cached: true, menus: cached }));
 
     if (!useQuota(getClientIp(req))) return res.status(200).json(fallback(input, "daily_limit"));
 
@@ -356,7 +403,7 @@ module.exports = async function handler(req, res) {
     if (!result.menus) return res.status(200).json(fallback(input, result.reason));
 
     setCached(key, result.menus);
-    return res.status(200).json({ source: "ai", menus: result.menus });
+    return res.status(200).json(withPartial({ source: "ai", menus: result.menus }));
   } catch (err) {
     console.error("예상치 못한 오류:", err.message);
     return res.status(200).json(fallback(input, "server_error"));

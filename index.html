@@ -419,14 +419,19 @@
         setLoading(false);
       }
 
+      // 새 메뉴를 하나도 못 찾음: 엉뚱한 메뉴로 채우지 않고 안내만 한다.
+      // 다시 추천일 때는 직전 결과를 그대로 두고, 처음 추천일 때는 예전 결과를 숨긴다.
       if (menus.length === 0) {
-        setMessage("더 추천할 메뉴가 없어요. 재료를 바꾸거나 추천받기를 다시 눌러 주세요.");
+        if (!isAgain) $("resultArea").hidden = true;
+        setMessage("이 재료로 더 추천할 새 메뉴를 못 찾았어요. 재료를 더 추가하거나 처음부터 다시 추천받아 보세요.");
         return;
       }
-      // 기본 레시피는 39개뿐이라 특이한 재료면 안 겹치는 메뉴가 섞일 수 있다 → 이유를 알려 준다.
-      const unrelated = menus.some((m) => m.missing.length === m.ingredients.length);
-      if (source === "fallback" && unrelated && !$("message").textContent) {
-        setMessage("고른 재료로 만들 수 있는 기본 레시피가 적어서, 일부는 비슷한 메뉴로 골랐어요.");
+      // 3개보다 적으면 몇 개인지 알려 준다. (서버 연결 실패 안내가 있으면 뒤에 붙임)
+      if (menus.length < 3) {
+        const note = source === "ai"
+          ? `AI가 새로 찾은 메뉴는 ${menus.length}개예요. 재료를 더 추가하면 더 다양하게 추천받을 수 있어요.`
+          : `고른 재료가 들어간 기본 레시피는 ${menus.length}개예요.`;
+        setMessage([$("message").textContent, note].filter(Boolean).join(" "));
       }
       shownNames.push(...menus.map((m) => m.name));
       showResults(menus, source);

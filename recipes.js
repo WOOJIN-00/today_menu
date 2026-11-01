@@ -220,6 +220,7 @@ function normalizeIngredient(name) {
 }
 
 // 내 재료와 가장 많이 겹치는 레시피 3개를 골라 missing(부족한 재료)을 붙여 돌려준다.
+// 겹치는 재료가 하나도 없는 레시피는 넣지 않는다. (그래서 3개보다 적거나 빈 목록일 수 있음)
 // - mood: "든든" / "가벼움" / "매콤" / "국물" / "빠르게" / "" (상관없음)
 // - excludeNames: 이미 추천한 메뉴 이름 (나중에 "다시 추천"에서 사용)
 function recommendFromRecipes(userIngredients, mood = "", excludeNames = [], count = 3) {
@@ -241,6 +242,7 @@ function recommendFromRecipes(userIngredients, mood = "", excludeNames = [], cou
         moodMatch: matchesMood(r),
       };
     })
+    .filter((r) => r.matched > 0)
     // 정렬 순서: ① 겹치는 재료 많은 순 ② 기분이 맞는 것 ③ 부족한 재료 적은 순 ④ 조리 시간 짧은 순
     .sort((a, b) =>
       b.matched - a.matched ||
