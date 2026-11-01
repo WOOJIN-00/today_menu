@@ -153,7 +153,7 @@ const reply = (obj, status = 200) => async () => ({ ok: status === 200, status,
   process.env.GEMINI_FALLBACK_MODEL = "backup-model";
   script(reply({}, 503), reply({}, 503), ok3);
   t = await timed("과부하3", "6.6.6.3");
-  check("6-c 503 두 번 → 예비 모델로 성공", t.r.data.source === "ai" && urls.length === 3 && model(urls[1]) === "gemini-3.8-flash" && model(urls[2]) === "backup-model", urls.map(model).join(" → "));
+  check("6-c 503 두 번 → 예비 모델로 성공", t.r.data.source === "ai" && urls.length === 3 && model(urls[1]) === "gemini-3.1-flash-lite" && model(urls[2]) === "backup-model", urls.map(model).join(" → "));
 
   script(reply({}, 503));
   t = await timed("과부하4", "6.6.6.4");
@@ -163,7 +163,7 @@ const reply = (obj, status = 200) => async () => ({ ok: status === 200, status,
   t = await timed("서버오류", "6.6.6.5");
   check("6-e 503이 아닌 오류(500)는 예비 모델 안 씀, 쉬지 않음", t.r.data.source === "fallback" && urls.length === 2 && t.sec < 1, t.sec + "초, " + urls.length + "회");
 
-  process.env.GEMINI_FALLBACK_MODEL = "gemini-3.8-flash";
+  process.env.GEMINI_FALLBACK_MODEL = "gemini-3.1-flash-lite";
   script(reply({}, 503));
   t = await timed("같은모델", "6.6.6.6");
   check("6-f 예비 모델이 기본 모델과 같으면 건너뜀", urls.length === 2);
@@ -278,10 +278,10 @@ const reply = (obj, status = 200) => async () => ({ ok: status === 200, status,
   logs.length = 0; aiSays(http(503), http(503), ["백업메뉴1", "백업메뉴2", "백업메뉴3"]);
   d = await ask("8.9.0.1");
   check("9-a 기본 503 두 번 → 예비 모델 성공: 시도·성공 로그", d.source === "ai" &&
-    backupLogs().join("|") === "예비 모델 시도: backup-model (기본 모델 gemini-3.8-flash 503 두 번)|예비 모델 성공: backup-model (새 메뉴 3개)", backupLogs().join(" / "));
+    backupLogs().join("|") === "예비 모델 시도: backup-model (기본 모델 gemini-3.1-flash-lite 503 두 번)|예비 모델 성공: backup-model (새 메뉴 3개)", backupLogs().join(" / "));
 
   logs.length = 0; aiSays(http(503)); d = await ask("8.9.0.2");
-  check("9-b 예비 모델도 503 → 시도·실패(HTTP 503) 로그", backupLogs().join("|") === "예비 모델 시도: backup-model (기본 모델 gemini-3.8-flash 503 두 번)|예비 모델 실패: backup-model - HTTP 503", backupLogs().join(" / "));
+  check("9-b 예비 모델도 503 → 시도·실패(HTTP 503) 로그", backupLogs().join("|") === "예비 모델 시도: backup-model (기본 모델 gemini-3.1-flash-lite 503 두 번)|예비 모델 실패: backup-model - HTTP 503", backupLogs().join(" / "));
 
   logs.length = 0; aiSays(http(503), http(503), ["단호박죽"]); d = await ask("8.9.0.3");
   check("9-c 예비 모델이 이미 나온 메뉴만 → 실패(새 메뉴 0개) 로그", backupLogs().at(-1) === "예비 모델 실패: backup-model - 새 메뉴 0개", backupLogs().at(-1));
@@ -300,7 +300,7 @@ const reply = (obj, status = 200) => async () => ({ ok: status === 200, status,
 
   logs.length = 0; const tp = timeoutPrompts(); script(tp.track(hang), tp.track(ok3));
   t = await timed("느린재료1", "8.9.1.1");
-  check("10-a 기본 모델 6초 넘게 응답 없음 → 예비 모델 성공", t.r.data.source === "ai" && urls.map(model).join() === "gemini-3.8-flash,backup-model" && t.sec >= 6.4 && t.sec < 7.5, t.sec + "초");
+  check("10-a 기본 모델 6초 넘게 응답 없음 → 예비 모델 성공", t.r.data.source === "ai" && urls.map(model).join() === "gemini-3.1-flash-lite,backup-model" && t.sec >= 6.4 && t.sec < 7.5, t.sec + "초");
   check("10-a 시도·성공 로그", backupLogs().join("|") === "예비 모델 시도(시간 초과 후): backup-model|예비 모델 성공: backup-model (새 메뉴 3개)", backupLogs().join(" / "));
   check("10-a 예비 모델에는 '다시 요청' 문구 없는 첫 프롬프트", tp.sent.length === 2 && tp.sent[1] === tp.sent[0] && !tp.sent[1].includes("다시 요청"));
 
@@ -334,7 +334,7 @@ const reply = (obj, status = 200) => async () => ({ ok: status === 200, status,
   t = await timed("느린재료7", "8.9.1.7");
   check("10-g 첫 시도 429는 예비 모델 설정이 있어도 재시도 없이 ai_quota", (t.r.data.cause || t.r.data.reason) === "ai_quota" && urls.length === 1 && backupLogs().length === 0);
 
-  process.env.GEMINI_FALLBACK_MODEL = "gemini-3.8-flash";
+  process.env.GEMINI_FALLBACK_MODEL = "gemini-3.1-flash-lite";
   logs.length = 0; script(() => { throw abortErr(); }, ok3);
   t = await timed("느린재료8", "8.9.1.8");
   check("10-h 예비 모델이 기본 모델과 같으면 시간 초과 후에도 시도 안 함", t.r.data.source === "fallback" && urls.length === 1 && backupLogs().length === 0);
@@ -353,7 +353,7 @@ const reply = (obj, status = 200) => async () => ({ ok: status === 200, status,
 
   logs.length = 0; sentThinking = []; script(timeout, rec(thinking400), rec(ok3));
   t = await timed("설정재료1", "8.9.2.1");
-  check("11-a 시간 초과 후 예비 모델 설정 400 → 설정 빼고 성공", t.r.data.source === "ai" && urls.map(model).join() === "gemini-3.8-flash,backup-model,backup-model" &&
+  check("11-a 시간 초과 후 예비 모델 설정 400 → 설정 빼고 성공", t.r.data.source === "ai" && urls.map(model).join() === "gemini-3.1-flash-lite,backup-model,backup-model" &&
     backupLogs().join("|") === "예비 모델 시도(시간 초과 후): backup-model|" + RETRY_LOG + "|예비 모델 성공: backup-model (새 메뉴 3개)", backupLogs().join(" / "));
   check("11-a 첫 요청엔 설정 있고 재시도엔 없음, 프롬프트는 같음", sentThinking.length === 2 && sentThinking[0].thinking && !sentThinking[1].thinking && sentThinking[0].prompt === sentThinking[1].prompt);
   check("11-a 로그에 키·재료·오류 본문 없음", !/fake-key-for-test|설정재료|thinkingLevel|Cannot find/.test(logs.join(" ")), logs.length + "줄");
@@ -361,7 +361,7 @@ const reply = (obj, status = 200) => async () => ({ ok: status === 200, status,
   logs.length = 0; sentThinking = []; script(http(503), http(503), rec(thinking400), rec(ok3));
   t = await timed("설정재료2", "8.9.2.2");
   check("11-b 503 두 번 후 예비 모델 설정 400 → 설정 빼고 성공", t.r.data.source === "ai" && urls.length === 4 && sentThinking[0].thinking && !sentThinking[1].thinking && sentThinking[0].prompt === sentThinking[1].prompt &&
-    backupLogs().join("|") === "예비 모델 시도: backup-model (기본 모델 gemini-3.8-flash 503 두 번)|" + RETRY_LOG + "|예비 모델 성공: backup-model (새 메뉴 3개)", backupLogs().join(" / "));
+    backupLogs().join("|") === "예비 모델 시도: backup-model (기본 모델 gemini-3.1-flash-lite 503 두 번)|" + RETRY_LOG + "|예비 모델 성공: backup-model (새 메뉴 3개)", backupLogs().join(" / "));
 
   logs.length = 0; script(timeout, thinking400, http(500), ok3);
   t = await timed("설정재료3", "8.9.2.3");

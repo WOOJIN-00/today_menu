@@ -10,7 +10,7 @@
 
 const { recommendFromRecipes } = require("../recipes.js");
 
-const DEFAULT_MODEL = "gemini-3.8-flash";
+const DEFAULT_MODEL = "gemini-3.1-flash-lite";
 const GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models";
 
 // 입력 제한 (Plan.md 7번 "입력 길이 제한")

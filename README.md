@@ -87,7 +87,7 @@ AI 추천까지 확인하려면 아래 환경변수를 `.env.local` 파일에 �
 | 이름 | 필수 | 설명 |
 |---|---|---|
 | `GEMINI_API_KEY` | 선택 | Google AI Studio에서 발급한 Gemini API 키. 없으면 기본 레시피로만 동작합니다. |
-| `GEMINI_MODEL` | 선택 | 사용할 Gemini 모델 이름. 비워 두면 `gemini-3.8-flash`를 사용합니다. |
+| `GEMINI_MODEL` | 선택 | 사용할 Gemini 모델 이름. 비워 두면 `gemini-3.1-flash-lite`를 사용합니다. |
 | `GEMINI_FALLBACK_MODEL` | 선택 | 기본 모델이 과부하(503)로 두 번 실패하거나 첫 시도가 시간 초과로 끝나면 한 번 더 시도할 예비 모델 이름 (예: 무료 등급의 다른 flash 모델). 비워 두면 이 단계를 건너뜁니다. |
 
 - 키는 **서버 함수에서만** 읽습니다. 화면 코드나 GitHub에는 절대 넣지 않습니다.
