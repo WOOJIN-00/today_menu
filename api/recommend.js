@@ -16,7 +16,7 @@ const GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models";
 // 입력 제한 (Plan.md 7번 "입력 길이 제한")
 const MAX_INGREDIENTS = 15;
 const MAX_INGREDIENT_LENGTH = 20;
-const MAX_EXCLUDE = 30;
+const MAX_EXCLUDE = 60; // 기본 레시피 39개를 모두 제외할 수 있을 만큼
 const MAX_EXCLUDE_LENGTH = 30;
 const ALLOWED_MOODS = ["", "빠르게", "든든", "가벼움", "매콤", "국물"];
 
@@ -24,7 +24,10 @@ const ALLOWED_MOODS = ["", "빠르게", "든든", "가벼움", "매콤", "국물
 const DAILY_LIMIT_PER_IP = 20;
 const CACHE_TTL_MS = 10 * 60 * 1000; // 10분
 const CACHE_MAX_ENTRIES = 200;
-const AI_TIMEOUT_MS = 10 * 1000;
+// AI 대기 시간: 한 번에 최대 20초, 재시도 포함 전체 25초 (화면의 30초 대기보다 먼저 끝나도록)
+const AI_ATTEMPT_TIMEOUT_MS = 20 * 1000;
+const AI_TOTAL_BUDGET_MS = 25 * 1000;
+const MIN_RETRY_TIME_MS = 5 * 1000;
 
 // 메모리 저장소: 서버가 켜져 있는 동안만 유지된다.
 const usageByIp = new Map(); // ip → 오늘 AI 요청 횟수
@@ -172,10 +175,18 @@ class GeminiError extends Error {
   }
 }
 
-async function callGemini(prompt) {
+// useLowThinking: 응답을 빨리 받으려고 "생각" 단계를 낮춘다.
+// 모델이 이 설정을 모르면 400이 나므로, 그때는 재시도에서 빼고 보낸다.
+async function callGemini(prompt, { timeoutMs, useLowThinking }) {
   const model = process.env.GEMINI_MODEL || DEFAULT_MODEL;
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), AI_TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  const generationConfig = {
+    responseMimeType: "application/json",
+    responseSchema: RESPONSE_SCHEMA,
+  };
+  if (useLowThinking) generationConfig.thinkingConfig = { thinkingLevel: "low" };
 
   try {
     const res = await fetch(`${GEMINI_URL}/${encodeURIComponent(model)}:generateContent`, {
@@ -186,10 +197,7 @@ async function callGemini(prompt) {
       },
       body: JSON.stringify({
         contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: {
-          responseMimeType: "application/json",
-          responseSchema: RESPONSE_SCHEMA,
-        },
+        generationConfig,
       }),
       signal: controller.signal,
     });
@@ -218,6 +226,10 @@ function parseMenus(text, exclude) {
   const menus = data?.menus;
   if (!Array.isArray(menus) || menus.length !== 3) return null;
 
+  // 메뉴 이름 비교용: 띄어쓰기·대소문자 차이는 같은 메뉴로 본다 ("김치 볶음밥" = "김치볶음밥")
+  const sameName = (name) => normalizeForKey(name).replace(/ /g, "");
+  const seen = new Set(exclude.map(sameName));
+
   for (const m of menus) {
     const ok =
       typeof m?.name === "string" && m.name.trim() &&
@@ -225,8 +237,9 @@ function parseMenus(text, exclude) {
       isStringList(m.ingredients, false) &&
       isStringList(m.missing, true) &&
       isStringList(m.steps, false) &&
-      !exclude.includes(m.name.trim());
+      !seen.has(sameName(m.name)); // 제외 메뉴이거나 3개 안에서 중복이면 실패
     if (!ok) return null;
+    seen.add(sameName(m.name));
   }
 
   // 필요한 항목만 골라 깔끔하게 돌려준다.
@@ -239,17 +252,28 @@ function parseMenus(text, exclude) {
   }));
 }
 
-// 최대 2번(처음 + 재시도 1회) 시도한다. 한도 초과(429)는 다시 해도 소용없으니 바로 포기.
+// 최대 2번(처음 + 재시도 1회) 시도한다.
+// - 한도 초과(429)는 다시 해도 소용없으니 바로 포기
+// - 시간 초과이거나 남은 시간이 부족하면 재시도하지 않음 (전체 25초 안에 끝내기)
 async function recommendWithAI(input) {
   const prompt = buildPrompt(input);
+  const deadline = Date.now() + AI_TOTAL_BUDGET_MS;
+  let useLowThinking = true;
+
   for (let attempt = 1; attempt <= 2; attempt++) {
+    const remaining = deadline - Date.now();
+    if (attempt > 1 && remaining < MIN_RETRY_TIME_MS) break;
     try {
-      const menus = parseMenus(await callGemini(prompt), input.exclude);
+      const text = await callGemini(prompt, { timeoutMs: Math.min(AI_ATTEMPT_TIMEOUT_MS, remaining), useLowThinking });
+      const menus = parseMenus(text, input.exclude);
       if (menus) return { menus };
       console.warn(`AI 응답 검증 실패 (시도 ${attempt})`);
     } catch (err) {
-      console.warn(`AI 호출 실패 (시도 ${attempt}): ${err.name === "AbortError" ? "시간 초과" : err.message}`);
+      const timedOut = err.name === "AbortError";
+      console.warn(`AI 호출 실패 (시도 ${attempt}): ${timedOut ? "시간 초과" : err.message}`);
       if (err.status === 429) return { reason: "ai_quota" };
+      if (timedOut) break;
+      if (err.status === 400) useLowThinking = false; // 생각 단계 설정을 모르는 모델일 수 있음
     }
   }
   return { reason: "ai_error" };

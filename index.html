@@ -15,8 +15,9 @@
       line-height: 1.5;
     }
     .wrap { max-width: 720px; margin: 0 auto; padding: 24px 16px 48px; }
-    .top { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
-    h1 { margin: 0 0 4px; font-size: 1.6rem; }
+    .top { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 4px; }
+    /* 작은 폰에서는 제목 글자를 조금 줄여 한 줄에 들어가게 */
+    h1 { margin: 0; font-size: clamp(1.3rem, 6vw, 1.6rem); white-space: nowrap; }
     .sub { margin: 0 0 24px; color: #777; }
     section { background: #fff; border-radius: 14px; padding: 16px; margin-bottom: 16px; box-shadow: 0 1px 4px rgba(0,0,0,.06); }
     h2 { font-size: 1.05rem; margin: 0 0 12px; }
@@ -80,12 +81,10 @@
 <body>
   <div class="wrap">
     <div class="top">
-      <div>
-        <h1>🍳 오늘 뭐 먹지?</h1>
-        <p class="sub">재료를 고르고 추천받기만 누르면 메뉴 3개와 레시피가 나와요.</p>
-      </div>
+      <h1>🍳 오늘 뭐 먹지?</h1>
       <button id="favToggle" class="sub-btn fav-toggle" type="button">⭐ 즐겨찾기</button>
     </div>
+    <p class="sub">재료를 고르고 추천받기만 누르면 메뉴 3개와 레시피가 나와요.</p>
 
     <!-- 즐겨찾기 목록 (버튼을 누르면 열림) -->
     <section id="favorites" hidden>
@@ -134,7 +133,7 @@
     const MAX_SELECTED = 15;
     const MAX_CUSTOM = 10;
     const MAX_LENGTH = 15;
-    const MAX_EXCLUDE = 30;
+    const MAX_EXCLUDE = 60;
     const MAX_EXCLUDE_LENGTH = 30;
     const REQUEST_TIMEOUT_MS = 30 * 1000; // 서버는 AI를 최대 2번 부르므로 넉넉하게
     const FAVORITES_KEY = "menuFavorites";
@@ -363,9 +362,9 @@
       $("resultArea").setAttribute("aria-busy", String(on));
     }
 
-    // 서버에 보낼 제외 목록: 서버 제한(30개, 30자)을 넘지 않게 최근 것만
+    // 서버에 보낼 제외 목록: 서버 제한(30자)을 넘는 이름만 뺀다. 개수 제한은 recommend()에서 확인.
     function buildExclude() {
-      return shownNames.filter((n) => n.length <= MAX_EXCLUDE_LENGTH).slice(-MAX_EXCLUDE);
+      return shownNames.filter((n) => n.length <= MAX_EXCLUDE_LENGTH);
     }
 
     async function requestRecommend(exclude) {
@@ -394,6 +393,11 @@
       }
       if (!isAgain) shownNames = []; // 새로 추천받기는 처음부터
       const exclude = buildExclude();
+      // 제외 목록이 서버 한도를 넘으면 오래된 메뉴가 다시 나올 수 있으니 여기서 멈춘다.
+      if (exclude.length > MAX_EXCLUDE) {
+        setMessage(`지금까지 ${shownNames.length}개 메뉴를 봤어요. 처음부터 다시 보려면 추천받기를 눌러 주세요.`);
+        return;
+      }
 
       setMessage("");
       setLoading(true);
@@ -418,6 +422,11 @@
       if (menus.length === 0) {
         setMessage("더 추천할 메뉴가 없어요. 재료를 바꾸거나 추천받기를 다시 눌러 주세요.");
         return;
+      }
+      // 기본 레시피는 39개뿐이라 특이한 재료면 안 겹치는 메뉴가 섞일 수 있다 → 이유를 알려 준다.
+      const unrelated = menus.some((m) => m.missing.length === m.ingredients.length);
+      if (source === "fallback" && unrelated && !$("message").textContent) {
+        setMessage("고른 재료로 만들 수 있는 기본 레시피가 적어서, 일부는 비슷한 메뉴로 골랐어요.");
       }
       shownNames.push(...menus.map((m) => m.name));
       showResults(menus, source);
