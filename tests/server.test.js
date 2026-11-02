@@ -190,7 +190,7 @@ const reply = (obj, status = 200) => async () => ({ ok: status === 200, status,
   delete process.env.GEMINI_FALLBACK_MODEL;
 
   console.log(fails === 0 ? "=> 503·시간 초과 포함 전부 통과" : "=> 실패 " + fails + "건");
-  // ===== 다시 추천: 후보 5개 + 걸러내기 + 대체 경로 무관 메뉴 제외 =====
+  // ===== 다시 추천: 후보 6개 + 걸러내기 + 대체 경로 무관 메뉴 제외 =====
   const warns = []; const origWarn = console.warn; console.warn = (...a) => { warns.push(a.join(" ")); };
   let prompts = [];
   const aiSays = (...rounds) => { prompts = []; let i = 0;
@@ -204,13 +204,14 @@ const reply = (obj, status = 200) => async () => ({ ok: status === 200, status,
   aiSays(["N1", "제외A", "N2", "N3", "N4"]);
   d = (await call({ ingredients: ["밥", "김"], exclude: ["제외A"] }, { ip: "8.8.8.2" })).data;
   check("7-b 후보 5개 중 새 메뉴 4개 → 앞의 3개, partial 없음", d.source === "ai" && d.menus.map(m => m.name).join() === "N1,N2,N3" && !d.partial);
-  check("7-b 첫 프롬프트는 후보 5개 요청, 재시도 문구 없음", prompts[0].includes("메뉴 후보 5개") && !prompts[0].includes("다시 요청"));
+  check("7-b 첫 프롬프트에 다양성·기분 규칙 포함", prompts[0].includes("조리법·형태가 다르게") && prompts[0].includes("기분·상황에 맞아야"));
+  check("7-b 첫 프롬프트는 후보 6개 요청, 재시도 문구 없음", prompts[0].includes("메뉴 후보 6개") && !prompts[0].includes("다시 요청"));
 
   aiSays(["단호박죽", "단호박 수프", "단호박전"]);
   d = (await call({ ingredients: ["단호박"], exclude: ["단호박 죽"] }, { ip: "8.8.8.3" })).data;
   check("7-c 제외 '단호박 죽' → AI의 '단호박죽' 걸러짐", d.source === "ai" && d.menus.map(m => m.name).join() === "단호박 수프,단호박전");
 
-  // 단호박 하나로 4번 연속: AI는 늘 같은 후보 5개만 낸다고 가정 (게으른 AI)
+  // 단호박 하나로 4번 연속: AI는 늘 같은 후보만 낸다고 가정 (게으른 AI)
   const lazy = ["단호박죽", "단호박전", "단호박찜", "단호박샐러드", "단호박구이"];
   const shown = []; const rounds = [];
   for (let r = 1; r <= 4; r++) {
